@@ -1,0 +1,40 @@
+{
+  "name": "@arraypress/waveform-tracker",
+  "version": "1.0.0",
+  "description": "Simple analytics tracking for WaveformPlayer",
+  "main": "dist/waveform-tracker.js",
+  "module": "dist/waveform-tracker.esm.js",
+  "files": [
+    "dist/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:iife && npm run build:esm && npm run build:min",
+    "build:iife": "esbuild src/index.js --bundle --format=iife --outfile=dist/waveform-tracker.js",
+    "build:esm": "esbuild src/index.js --bundle --format=esm --outfile=dist/waveform-tracker.esm.js",
+    "build:min": "esbuild src/index.js --bundle --format=iife --minify --outfile=dist/waveform-tracker.min.js",
+    "dev": "esbuild src/index.js --bundle --format=iife --outfile=dist/waveform-tracker.js --watch",
+    "serve": "npx http-server -p 8000"
+  },
+  "keywords": [
+    "audio",
+    "analytics",
+    "tracking",
+    "waveform",
+    "player",
+    "metrics"
+  ],
+  "author": "ArrayPress",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arraypress/waveform-tracker.git"
+  },
+  "peerDependencies": {
+    "@arraypress/waveform-player": "^1.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

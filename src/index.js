@@ -1,0 +1,328 @@
+/**
+ * WaveformTracker
+ * Simple analytics tracking for WaveformPlayer
+ *
+ * @version 1.0.0
+ * @license MIT
+ */
+
+class WaveformTracker {
+    constructor() {
+        this.config = null;
+        this.trackers = new Map();
+        this.debug = false;
+        this.sessionId = null;
+    }
+
+    /**
+     * Initialize tracker with configuration
+     * @param {Object} config - Tracker configuration
+     */
+    init(config = {}) {
+        // Default configuration
+        this.config = {
+            endpoint: config.endpoint || null,
+            handler: config.handler || null,
+            events: config.events || {listen: 30},
+            headers: config.headers || {},
+            metadata: config.metadata || {},
+            session: config.session !== false,
+            debug: config.debug || false
+        };
+
+        this.debug = this.config.debug;
+        this.sessionId = this.config.session ? this.generateSessionId() : null;
+
+        // Validate config
+        if (!this.config.endpoint && !this.config.handler) {
+            this.log('Warning: No endpoint or handler configured');
+        }
+
+        // Listen for waveform players being ready using event capturing
+        document.addEventListener('waveformplayer:ready', (e) => {
+            this.log('Player ready event caught:', e.detail.url);
+            this.trackPlayer(e.detail.player);
+        }, true); // TRUE enables capturing phase
+
+        // Track any existing players that might already be initialized
+        this.trackAllPlayers();
+
+        this.log('Tracker initialized', this.config);
+    }
+
+    /**
+     * Track all existing WaveformPlayer instances
+     */
+    trackAllPlayers() {
+        if (typeof WaveformPlayer !== 'undefined' && WaveformPlayer.getAllInstances) {
+            const players = WaveformPlayer.getAllInstances();
+            players.forEach(player => this.trackPlayer(player));
+        }
+    }
+
+    /**
+     * Track a specific player instance
+     * @param {WaveformPlayer} player - Player instance to track
+     */
+    trackPlayer(player) {
+        // Validate player
+        if (!player || !player.container || !player.options) {
+            this.log('Invalid player instance');
+            return;
+        }
+
+        // Skip if already tracking
+        if (this.trackers.has(player)) {
+            return;
+        }
+
+        const tracker = {
+            player: player,
+            startTime: null,
+            elapsedTime: 0,
+            sentEvents: new Set(),
+            isTracking: false,
+            lastCheck: null
+        };
+
+        this.trackers.set(player, tracker);
+        this.log('Tracking player:', player.options.url);
+
+        // Listen to player events on the container element
+        const container = player.container;
+
+        // Store event handlers so we can remove them later
+        tracker.handlers = {
+            play: () => {
+                tracker.isTracking = true;
+                tracker.startTime = Date.now();
+                this.log('Play started:', player.options.url);
+            },
+
+            pause: () => {
+                if (tracker.isTracking && tracker.startTime) {
+                    const sessionTime = (Date.now() - tracker.startTime) / 1000;
+                    tracker.elapsedTime += sessionTime;
+                    tracker.startTime = null;
+                    tracker.isTracking = false;
+                    this.log('Paused. Session time:', sessionTime, 'Total:', tracker.elapsedTime);
+                }
+            },
+
+            timeupdate: (e) => {
+                if (!tracker.isTracking) return;
+
+                // Throttle to once per second
+                const now = Date.now();
+                if (tracker.lastCheck && now - tracker.lastCheck < 1000) return;
+                tracker.lastCheck = now;
+
+                const {currentTime, duration} = e.detail;
+
+                // Calculate total elapsed time including current session
+                const sessionTime = tracker.startTime ? (now - tracker.startTime) / 1000 : 0;
+                const totalElapsed = tracker.elapsedTime + sessionTime;
+                const percentComplete = (currentTime / duration) * 100;
+
+                // Check for events to fire
+                const events = this.config.events;
+
+                // Play event (time-based)
+                if (events.play && totalElapsed >= events.play && !tracker.sentEvents.has('play')) {
+                    this.sendEvent(tracker, 'play', Math.floor(totalElapsed), duration);
+                    tracker.sentEvents.add('play');
+                }
+
+                // Listen event (time-based)
+                if (events.listen && totalElapsed >= events.listen && !tracker.sentEvents.has('listen')) {
+                    this.sendEvent(tracker, 'listen', Math.floor(totalElapsed), duration);
+                    tracker.sentEvents.add('listen');
+                }
+
+                // Complete event (percent-based)
+                if (events.complete && percentComplete >= events.complete && !tracker.sentEvents.has('complete')) {
+                    this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
+                    tracker.sentEvents.add('complete');
+                }
+            },
+
+            ended: () => {
+                // Ensure time is recorded
+                if (tracker.isTracking && tracker.startTime) {
+                    const sessionTime = (Date.now() - tracker.startTime) / 1000;
+                    tracker.elapsedTime += sessionTime;
+                    tracker.startTime = null;
+                    tracker.isTracking = false;
+                }
+
+                // Check if we should send complete event
+                const events = this.config.events;
+                if (events.complete && !tracker.sentEvents.has('complete')) {
+                    const duration = player.audio ? player.audio.duration : 0;
+                    if (duration > 0) {
+                        this.sendEvent(tracker, 'complete', Math.floor(duration), duration);
+                        tracker.sentEvents.add('complete');
+                    }
+                }
+
+                // Reset for replay
+                tracker.sentEvents.clear();
+                tracker.elapsedTime = 0;
+                tracker.lastCheck = null;
+            }
+        };
+
+        // Add event listeners
+        container.addEventListener('waveformplayer:play', tracker.handlers.play);
+        container.addEventListener('waveformplayer:pause', tracker.handlers.pause);
+        container.addEventListener('waveformplayer:timeupdate', tracker.handlers.timeupdate);
+        container.addEventListener('waveformplayer:ended', tracker.handlers.ended);
+    }
+
+    /**
+     * Stop tracking a specific player
+     * @param {WaveformPlayer} player - Player instance to stop tracking
+     */
+    untrackPlayer(player) {
+        const tracker = this.trackers.get(player);
+        if (!tracker) return;
+
+        // Remove event listeners
+        const container = player.container;
+        if (container && tracker.handlers) {
+            container.removeEventListener('waveformplayer:play', tracker.handlers.play);
+            container.removeEventListener('waveformplayer:pause', tracker.handlers.pause);
+            container.removeEventListener('waveformplayer:timeupdate', tracker.handlers.timeupdate);
+            container.removeEventListener('waveformplayer:ended', tracker.handlers.ended);
+        }
+
+        // Remove from trackers
+        this.trackers.delete(player);
+        this.log('Stopped tracking player:', player.options?.url);
+    }
+
+    /**
+     * Send tracking event
+     */
+    sendEvent(tracker, eventType, time, duration) {
+        // Validate required fields
+        if (!tracker.player?.options?.url) {
+            this.log('Warning: Missing URL for event');
+            return;
+        }
+
+        if (typeof time !== 'number' || typeof duration !== 'number') {
+            this.log('Warning: Invalid time or duration for event');
+            return;
+        }
+
+        const payload = {
+            event: eventType,
+            url: tracker.player.options.url,
+            time: time,
+            duration: Math.floor(duration),
+            page: window.location.pathname,
+            ...this.config.metadata
+        };
+
+        if (this.sessionId) {
+            payload.session = this.sessionId;
+        }
+
+        // Add title if available
+        if (tracker.player.options.title) {
+            payload.title = tracker.player.options.title;
+        }
+
+        this.log('Sending event:', payload);
+
+        // Use custom handler if provided
+        if (this.config.handler) {
+            try {
+                this.config.handler(payload);
+            } catch (error) {
+                this.log('Error in custom handler:', error);
+            }
+            return;
+        }
+
+        // Otherwise POST to endpoint
+        if (this.config.endpoint) {
+            fetch(this.config.endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...this.config.headers
+                },
+                body: JSON.stringify(payload)
+            }).catch(error => {
+                this.log('Error sending event:', error);
+            });
+        }
+    }
+
+    /**
+     * Generate session ID
+     */
+    generateSessionId() {
+        return Math.random().toString(36).substring(2) + Date.now().toString(36);
+    }
+
+    /**
+     * Debug logging
+     */
+    log(...args) {
+        if (this.debug) {
+            console.log('[WaveformTracker]', ...args);
+        }
+    }
+
+    /**
+     * Reset tracker - removes all tracking
+     */
+    reset() {
+        // Untrack all players
+        this.trackers.forEach((tracker, player) => {
+            this.untrackPlayer(player);
+        });
+
+        this.trackers.clear();
+        this.config = null;
+        this.sessionId = null;
+    }
+
+    /**
+     * Get tracking stats
+     */
+    getStats() {
+        const stats = [];
+        this.trackers.forEach((tracker, player) => {
+            stats.push({
+                url: player.options?.url || 'unknown',
+                title: player.options?.title || null,
+                elapsedTime: tracker.elapsedTime,
+                isTracking: tracker.isTracking,
+                sentEvents: Array.from(tracker.sentEvents)
+            });
+        });
+        return stats;
+    }
+
+    /**
+     * Get number of tracked players
+     */
+    getTrackedCount() {
+        return this.trackers.size;
+    }
+}
+
+// Create singleton instance
+const tracker = new WaveformTracker();
+
+// Export for browser
+if (typeof window !== 'undefined') {
+    window.WaveformTracker = tracker;
+}
+
+// ES6 export
+export default tracker;

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WaveformTracker Example</title>
+
+    <!-- WaveformPlayer with events (v1.1.4+) -->
+    <link rel="stylesheet" href="https://unpkg.com/@arraypress/waveform-player@latest/dist/waveform-player.css">
+    <script src="https://unpkg.com/@arraypress/waveform-player@latest/dist/waveform-player.js"></script>
+
+    <!-- WaveformTracker -->
+    <script src="dist/waveform-tracker.js"></script>
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #0a0a0a;
+            color: #fff;
+        }
+
+        h1 {
+            color: #a855f7;
+        }
+
+        .demo {
+            background: #111;
+            border-radius: 12px;
+            padding: 2rem;
+            margin: 2rem 0;
+        }
+
+        .events {
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 2rem;
+            font-family: monospace;
+            font-size: 0.875rem;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .event-item {
+            padding: 0.5rem;
+            border-bottom: 1px solid #222;
+            color: #4ade80;
+        }
+
+        code {
+            background: #222;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #a855f7;
+        }
+    </style>
+</head>
+<body>
+<h1>🎯 WaveformTracker Demo</h1>
+<p>This demo tracks audio engagement. Try playing the tracks below and watch the events fire.</p>
+
+<!-- Audio Players -->
+<div class="demo">
+    <h2>Track 1: Short Sample</h2>
+    <div id="player1" data-waveform-player
+         data-url="https://waveformplayer.com/assets/audio/pluck-wings.mp3"
+         data-title="Wings"
+         data-subtitle="10 second sample">
+    </div>
+</div>
+
+<div class="demo">
+    <h2>Track 2: Another Sample</h2>
+    <div id="player2" data-waveform-player
+         data-url="https://waveformplayer.com/assets/audio/pluck-desire.mp3"
+         data-title="Desire"
+         data-subtitle="10 second sample">
+    </div>
+</div>
+
+<!-- Event Log -->
+<h2>📊 Tracked Events</h2>
+<p>Events are configured to fire at: <code>play: 3s</code>, <code>listen: 5s</code>, <code>complete: 90%</code></p>
+<div class="events" id="event-log">
+    <div class="event-item">Waiting for events...</div>
+</div>
+
+<script>
+    // Debug: Listen for ALL waveformplayer events globally
+    console.log('Setting up debug listeners...');
+
+    // Listen on document for ready events
+    document.addEventListener('waveformplayer:ready', (e) => {
+        console.log('🎉 Player ready event fired!', e.detail);
+    });
+
+    document.addEventListener('waveformplayer:play', (e) => {
+        console.log('▶️ Play event fired!', e.detail);
+    });
+
+    document.addEventListener('waveformplayer:pause', (e) => {
+        console.log('⏸️ Pause event fired!', e.detail);
+    });
+
+    document.addEventListener('waveformplayer:timeupdate', (e) => {
+        console.log('⏱️ Timeupdate:', e.detail.currentTime);
+    });
+
+    // Also check if WaveformPlayer exists
+    setTimeout(() => {
+        if (typeof WaveformPlayer !== 'undefined') {
+            console.log('WaveformPlayer loaded');
+            const instances = WaveformPlayer.getAllInstances();
+            console.log('Player instances found:', instances.length);
+            instances.forEach(p => console.log('Player URL:', p.options.url));
+        } else {
+            console.log('WaveformPlayer NOT found!');
+        }
+    }, 1000);
+
+    // Initialize tracker
+    WaveformTracker.init({
+        // Instead of sending to server, we'll display events
+        handler: (payload) => {
+            const log = document.getElementById('event-log');
+            const time = new Date().toLocaleTimeString();
+
+            const eventHtml = `
+                <div class="event-item">
+                    [${time}] Event: <strong>${payload.event}</strong> |
+                    Track: ${payload.url.split('/').pop()} |
+                    Time: ${payload.time}s
+                </div>
+            `;
+
+            if (log.children[0].textContent === 'Waiting for events...') {
+                log.innerHTML = eventHtml;
+            } else {
+                log.insertAdjacentHTML('afterbegin', eventHtml);
+            }
+
+            console.log('📊 Tracker event:', payload);
+        },
+
+        // Track these events (using shorter times for demo)
+        events: {
+            play: 3,      // After 3 seconds
+            listen: 5,    // After 5 seconds (achievable in 10s samples)
+            complete: 90  // At 90% completion
+        },
+
+        // Enable debug mode
+        debug: true
+    });
+</script>
+</body>
+</html>
