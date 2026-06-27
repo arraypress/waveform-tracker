@@ -1,6 +1,6 @@
 {
   "name": "@arraypress/waveform-tracker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publishConfig": {
     "access": "public"
   },
@@ -35,7 +35,7 @@
     "url": "git+https://github.com/arraypress/waveform-tracker.git"
   },
   "peerDependencies": {
-    "@arraypress/waveform-player": "^1.0.0"
+    "@arraypress/waveform-player": "^1.7.2"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
