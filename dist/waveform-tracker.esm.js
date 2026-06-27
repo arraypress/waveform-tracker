@@ -1,5 +1,5 @@
 // src/index.js
-var WaveformTracker = class {
+var WaveformTracker = class _WaveformTracker {
   constructor() {
     this.config = null;
     this.trackers = /* @__PURE__ */ new Map();
@@ -17,7 +17,7 @@ var WaveformTracker = class {
       events: config.events || { listen: 30 },
       headers: config.headers || {},
       metadata: config.metadata || {},
-      session: config.session === false ? false : true,
+      session: config.session !== false,
       debug: config.debug || false
     };
     this.debug = this.config.debug;
@@ -28,6 +28,12 @@ var WaveformTracker = class {
     document.addEventListener("waveformplayer:ready", (e) => {
       this.log("Player ready event caught:", e.detail.url);
       this.trackPlayer(e.detail.player);
+    }, true);
+    document.addEventListener("waveformplayer:destroy", (e) => {
+      this.log("Player destroy event caught:", e.detail?.url);
+      if (e.detail?.player) {
+        this.untrackPlayer(e.detail.player);
+      }
     }, true);
     this.trackAllPlayers();
     this.log("Tracker initialized", this.config);
@@ -55,7 +61,11 @@ var WaveformTracker = class {
     }
     const tracker2 = {
       player,
-      startTime: null,
+      // Engagement is accumulated from media-time (currentTime) deltas
+      // rather than wall-clock, so faster playback (1.5x/2x) is credited
+      // for the content actually consumed. lastTime is the previous
+      // currentTime seen while tracking; null resets the delta baseline.
+      lastTime: null,
       elapsedTime: 0,
       sentEvents: /* @__PURE__ */ new Set(),
       isTracking: false,
@@ -67,26 +77,32 @@ var WaveformTracker = class {
     tracker2.handlers = {
       play: () => {
         tracker2.isTracking = true;
-        tracker2.startTime = Date.now();
+        tracker2.lastTime = null;
         this.log("Play started:", player.options.url);
       },
       pause: () => {
-        if (tracker2.isTracking && tracker2.startTime) {
-          const sessionTime = (Date.now() - tracker2.startTime) / 1e3;
-          tracker2.elapsedTime += sessionTime;
-          tracker2.startTime = null;
+        if (tracker2.isTracking) {
           tracker2.isTracking = false;
-          this.log("Paused. Session time:", sessionTime, "Total:", tracker2.elapsedTime);
+          tracker2.lastTime = null;
+          this.log("Paused. Total media time:", tracker2.elapsedTime);
         }
       },
       timeupdate: (e) => {
         if (!tracker2.isTracking) return;
+        const { currentTime, duration } = e.detail;
+        if (typeof currentTime === "number") {
+          if (tracker2.lastTime !== null) {
+            const delta = currentTime - tracker2.lastTime;
+            if (delta > 0 && delta < _WaveformTracker.SEEK_THRESHOLD) {
+              tracker2.elapsedTime += delta;
+            }
+          }
+          tracker2.lastTime = currentTime;
+        }
         const now = Date.now();
         if (tracker2.lastCheck && now - tracker2.lastCheck < 1e3) return;
         tracker2.lastCheck = now;
-        const { currentTime, duration } = e.detail;
-        const sessionTime = tracker2.startTime ? (now - tracker2.startTime) / 1e3 : 0;
-        const totalElapsed = tracker2.elapsedTime + sessionTime;
+        const totalElapsed = tracker2.elapsedTime;
         const percentComplete = currentTime / duration * 100;
         const events = this.config.events;
         if (events.play && totalElapsed >= events.play && !tracker2.sentEvents.has("play")) {
@@ -102,18 +118,16 @@ var WaveformTracker = class {
           tracker2.sentEvents.add("complete");
         }
       },
-      ended: () => {
-        if (tracker2.isTracking && tracker2.startTime) {
-          const sessionTime = (Date.now() - tracker2.startTime) / 1e3;
-          tracker2.elapsedTime += sessionTime;
-          tracker2.startTime = null;
-          tracker2.isTracking = false;
-        }
+      ended: (e) => {
+        const detail = e.detail || {};
+        const duration = typeof detail.duration === "number" ? detail.duration : 0;
+        const currentTime = typeof detail.currentTime === "number" ? detail.currentTime : duration;
+        tracker2.isTracking = false;
+        tracker2.lastTime = null;
         const events = this.config.events;
         if (events.complete && !tracker2.sentEvents.has("complete")) {
-          const duration = player.audio ? player.audio.duration : 0;
           if (duration > 0) {
-            this.sendEvent(tracker2, "complete", Math.floor(duration), duration);
+            this.sendEvent(tracker2, "complete", Math.floor(currentTime), duration);
             tracker2.sentEvents.add("complete");
           }
         }
@@ -180,17 +194,47 @@ var WaveformTracker = class {
       return;
     }
     if (this.config.endpoint) {
-      fetch(this.config.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...this.config.headers
-        },
-        body: JSON.stringify(payload)
-      }).catch((error) => {
-        this.log("Error sending event:", error);
-      });
+      const terminal = eventType === "complete" || eventType === "listen";
+      this.send(this.config.endpoint, payload, terminal);
     }
+  }
+  /**
+   * Deliver a payload to the configured endpoint.
+   *
+   * Terminal events (complete, listen) often fire as the page is navigating
+   * away, where a normal fetch would be cancelled. For those we prefer
+   * navigator.sendBeacon and fall back to fetch with keepalive so the
+   * request survives unload. The endpoint and payload shape are unchanged.
+   *
+   * @param {string} endpoint - Destination URL
+   * @param {Object} payload - Event payload
+   * @param {boolean} terminal - Whether this is a terminal/near-unload event
+   */
+  send(endpoint, payload, terminal = false) {
+    const body = JSON.stringify(payload);
+    const hasCustomHeaders = this.config.headers && Object.keys(this.config.headers).length > 0;
+    if (terminal && !hasCustomHeaders && typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+      try {
+        const blob = new Blob([body], { type: "application/json" });
+        if (navigator.sendBeacon(endpoint, blob)) {
+          return;
+        }
+        this.log("sendBeacon refused payload, falling back to fetch");
+      } catch (error) {
+        this.log("sendBeacon failed, falling back to fetch:", error);
+      }
+    }
+    fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.config.headers
+      },
+      body,
+      keepalive: terminal
+    }).catch((error) => {
+      this.log("Error sending event:", error);
+    });
   }
   /**
    * Generate session ID
@@ -240,6 +284,7 @@ var WaveformTracker = class {
     return this.trackers.size;
   }
 };
+WaveformTracker.SEEK_THRESHOLD = 5;
 var tracker = new WaveformTracker();
 if (typeof window !== "undefined") {
   window.WaveformTracker = tracker;

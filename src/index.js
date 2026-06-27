@@ -44,6 +44,16 @@ class WaveformTracker {
             this.trackPlayer(e.detail.player);
         }, true); // TRUE enables capturing phase
 
+        // Tear down trackers when a player is destroyed. Without this the
+        // trackers Map keeps a strong reference to every player (and its DOM)
+        // forever, leaking them in SPAs that create/destroy players (v1.8.0+).
+        document.addEventListener('waveformplayer:destroy', (e) => {
+            this.log('Player destroy event caught:', e.detail?.url);
+            if (e.detail?.player) {
+                this.untrackPlayer(e.detail.player);
+            }
+        }, true);
+
         // Track any existing players that might already be initialized
         this.trackAllPlayers();
 
@@ -78,7 +88,11 @@ class WaveformTracker {
 
         const tracker = {
             player: player,
-            startTime: null,
+            // Engagement is accumulated from media-time (currentTime) deltas
+            // rather than wall-clock, so faster playback (1.5x/2x) is credited
+            // for the content actually consumed. lastTime is the previous
+            // currentTime seen while tracking; null resets the delta baseline.
+            lastTime: null,
             elapsedTime: 0,
             sentEvents: new Set(),
             isTracking: false,
@@ -95,33 +109,44 @@ class WaveformTracker {
         tracker.handlers = {
             play: () => {
                 tracker.isTracking = true;
-                tracker.startTime = Date.now();
+                // Reset the media-time baseline; the next timeupdate just
+                // records the position without crediting a delta.
+                tracker.lastTime = null;
                 this.log('Play started:', player.options.url);
             },
 
             pause: () => {
-                if (tracker.isTracking && tracker.startTime) {
-                    const sessionTime = (Date.now() - tracker.startTime) / 1000;
-                    tracker.elapsedTime += sessionTime;
-                    tracker.startTime = null;
+                if (tracker.isTracking) {
                     tracker.isTracking = false;
-                    this.log('Paused. Session time:', sessionTime, 'Total:', tracker.elapsedTime);
+                    tracker.lastTime = null;
+                    this.log('Paused. Total media time:', tracker.elapsedTime);
                 }
             },
 
             timeupdate: (e) => {
                 if (!tracker.isTracking) return;
 
-                // Throttle to once per second
+                const {currentTime, duration} = e.detail;
+
+                // Accumulate engagement from media-time deltas (every event,
+                // not throttled) so 1.5x/2x playback isn't under-credited.
+                // Ignore non-advances (pauses/repeats) and large jumps (seeks).
+                if (typeof currentTime === 'number') {
+                    if (tracker.lastTime !== null) {
+                        const delta = currentTime - tracker.lastTime;
+                        if (delta > 0 && delta < WaveformTracker.SEEK_THRESHOLD) {
+                            tracker.elapsedTime += delta;
+                        }
+                    }
+                    tracker.lastTime = currentTime;
+                }
+
+                // Throttle the event-firing checks to once per second
                 const now = Date.now();
                 if (tracker.lastCheck && now - tracker.lastCheck < 1000) return;
                 tracker.lastCheck = now;
 
-                const {currentTime, duration} = e.detail;
-
-                // Calculate total elapsed time including current session
-                const sessionTime = tracker.startTime ? (now - tracker.startTime) / 1000 : 0;
-                const totalElapsed = tracker.elapsedTime + sessionTime;
+                const totalElapsed = tracker.elapsedTime;
                 const percentComplete = (currentTime / duration) * 100;
 
                 // Check for events to fire
@@ -146,21 +171,25 @@ class WaveformTracker {
                 }
             },
 
-            ended: () => {
-                // Ensure time is recorded
-                if (tracker.isTracking && tracker.startTime) {
-                    const sessionTime = (Date.now() - tracker.startTime) / 1000;
-                    tracker.elapsedTime += sessionTime;
-                    tracker.startTime = null;
-                    tracker.isTracking = false;
-                }
+            ended: (e) => {
+                // Read time from the event detail so this works in BOTH self and
+                // external audio modes (in external mode player.audio is null).
+                // v1.8.0+ dispatches ended with { currentTime, duration } and
+                // also fires it in external mode.
+                const detail = e.detail || {};
+                const duration = typeof detail.duration === 'number' ? detail.duration : 0;
+                const currentTime = typeof detail.currentTime === 'number'
+                    ? detail.currentTime
+                    : duration;
+
+                tracker.isTracking = false;
+                tracker.lastTime = null;
 
                 // Check if we should send complete event
                 const events = this.config.events;
                 if (events.complete && !tracker.sentEvents.has('complete')) {
-                    const duration = player.audio ? player.audio.duration : 0;
                     if (duration > 0) {
-                        this.sendEvent(tracker, 'complete', Math.floor(duration), duration);
+                        this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
                         tracker.sentEvents.add('complete');
                     }
                 }
@@ -246,19 +275,58 @@ class WaveformTracker {
             return;
         }
 
-        // Otherwise POST to endpoint
+        // Otherwise POST to endpoint. 'complete' and 'listen' are terminal /
+        // near-unload events, so deliver them with sendBeacon/keepalive.
         if (this.config.endpoint) {
-            fetch(this.config.endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...this.config.headers
-                },
-                body: JSON.stringify(payload)
-            }).catch(error => {
-                this.log('Error sending event:', error);
-            });
+            const terminal = eventType === 'complete' || eventType === 'listen';
+            this.send(this.config.endpoint, payload, terminal);
         }
+    }
+
+    /**
+     * Deliver a payload to the configured endpoint.
+     *
+     * Terminal events (complete, listen) often fire as the page is navigating
+     * away, where a normal fetch would be cancelled. For those we prefer
+     * navigator.sendBeacon and fall back to fetch with keepalive so the
+     * request survives unload. The endpoint and payload shape are unchanged.
+     *
+     * @param {string} endpoint - Destination URL
+     * @param {Object} payload - Event payload
+     * @param {boolean} terminal - Whether this is a terminal/near-unload event
+     */
+    send(endpoint, payload, terminal = false) {
+        const body = JSON.stringify(payload);
+        const hasCustomHeaders = this.config.headers
+            && Object.keys(this.config.headers).length > 0;
+
+        // sendBeacon cannot set custom headers, so only use it when none are
+        // configured; otherwise fall through to fetch (which preserves them).
+        if (terminal && !hasCustomHeaders
+            && typeof navigator !== 'undefined'
+            && typeof navigator.sendBeacon === 'function') {
+            try {
+                const blob = new Blob([body], {type: 'application/json'});
+                if (navigator.sendBeacon(endpoint, blob)) {
+                    return;
+                }
+                this.log('sendBeacon refused payload, falling back to fetch');
+            } catch (error) {
+                this.log('sendBeacon failed, falling back to fetch:', error);
+            }
+        }
+
+        fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...this.config.headers
+            },
+            body: body,
+            keepalive: terminal
+        }).catch(error => {
+            this.log('Error sending event:', error);
+        });
     }
 
     /**
@@ -315,6 +383,11 @@ class WaveformTracker {
         return this.trackers.size;
     }
 }
+
+// Maximum forward currentTime jump (seconds) still treated as normal playback
+// when accumulating media-time engagement. Larger jumps are treated as seeks
+// and not credited.
+WaveformTracker.SEEK_THRESHOLD = 5;
 
 // Create singleton instance
 const tracker = new WaveformTracker();

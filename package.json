@@ -35,7 +35,7 @@
     "url": "git+https://github.com/arraypress/waveform-tracker.git"
   },
   "peerDependencies": {
-    "@arraypress/waveform-player": "^1.7.2"
+    "@arraypress/waveform-player": "^1.8.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
