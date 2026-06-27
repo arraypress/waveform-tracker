@@ -23,7 +23,7 @@ var WaveformTracker = class _WaveformTracker {
     this.debug = this.config.debug;
     this.sessionId = this.config.session ? this.generateSessionId() : null;
     if (!this.config.endpoint && !this.config.handler) {
-      this.log("Warning: No endpoint or handler configured");
+      this.warn("No endpoint or handler configured; events will not be delivered");
     }
     document.addEventListener("waveformplayer:ready", (e) => {
       this.log("Player ready event caught:", e.detail.url);
@@ -53,7 +53,7 @@ var WaveformTracker = class _WaveformTracker {
    */
   trackPlayer(player) {
     if (!player || !player.container || !player.options) {
-      this.log("Invalid player instance");
+      this.warn("Ignoring invalid player instance");
       return;
     }
     if (this.trackers.has(player)) {
@@ -163,11 +163,11 @@ var WaveformTracker = class _WaveformTracker {
    */
   sendEvent(tracker2, eventType, time, duration) {
     if (!tracker2.player?.options?.url) {
-      this.log("Warning: Missing URL for event");
+      this.warn("Missing URL for event; skipping");
       return;
     }
     if (typeof time !== "number" || typeof duration !== "number") {
-      this.log("Warning: Invalid time or duration for event");
+      this.warn("Invalid time or duration for event; skipping");
       return;
     }
     const payload = {
@@ -189,7 +189,7 @@ var WaveformTracker = class _WaveformTracker {
       try {
         this.config.handler(payload);
       } catch (error) {
-        this.log("Error in custom handler:", error);
+        this.error("Custom handler threw:", error);
       }
       return;
     }
@@ -233,7 +233,7 @@ var WaveformTracker = class _WaveformTracker {
       body,
       keepalive: terminal
     }).catch((error) => {
-      this.log("Error sending event:", error);
+      this.error("Failed to send event:", error);
     });
   }
   /**
@@ -243,12 +243,26 @@ var WaveformTracker = class _WaveformTracker {
     return Math.random().toString(36).substring(2) + Date.now().toString(36);
   }
   /**
-   * Debug logging
+   * Debug logging - only emitted when debug mode is enabled.
    */
   log(...args) {
     if (this.debug) {
       console.log("[WaveformTracker]", ...args);
     }
+  }
+  /**
+   * Recoverable / configuration warning - always emitted so integration
+   * mistakes surface even when debug mode is off.
+   */
+  warn(...args) {
+    console.warn("[WaveformTracker]", ...args);
+  }
+  /**
+   * Genuine failure - always emitted so dropped events and thrown handlers
+   * surface even when debug mode is off.
+   */
+  error(...args) {
+    console.error("[WaveformTracker]", ...args);
   }
   /**
    * Reset tracker - removes all tracking

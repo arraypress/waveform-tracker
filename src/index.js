@@ -35,7 +35,7 @@ class WaveformTracker {
 
         // Validate config
         if (!this.config.endpoint && !this.config.handler) {
-            this.log('Warning: No endpoint or handler configured');
+            this.warn('No endpoint or handler configured; events will not be delivered');
         }
 
         // Listen for waveform players being ready using event capturing
@@ -77,7 +77,7 @@ class WaveformTracker {
     trackPlayer(player) {
         // Validate player
         if (!player || !player.container || !player.options) {
-            this.log('Invalid player instance');
+            this.warn('Ignoring invalid player instance');
             return;
         }
 
@@ -236,12 +236,12 @@ class WaveformTracker {
     sendEvent(tracker, eventType, time, duration) {
         // Validate required fields
         if (!tracker.player?.options?.url) {
-            this.log('Warning: Missing URL for event');
+            this.warn('Missing URL for event; skipping');
             return;
         }
 
         if (typeof time !== 'number' || typeof duration !== 'number') {
-            this.log('Warning: Invalid time or duration for event');
+            this.warn('Invalid time or duration for event; skipping');
             return;
         }
 
@@ -270,7 +270,7 @@ class WaveformTracker {
             try {
                 this.config.handler(payload);
             } catch (error) {
-                this.log('Error in custom handler:', error);
+                this.error('Custom handler threw:', error);
             }
             return;
         }
@@ -325,7 +325,7 @@ class WaveformTracker {
             body: body,
             keepalive: terminal
         }).catch(error => {
-            this.log('Error sending event:', error);
+            this.error('Failed to send event:', error);
         });
     }
 
@@ -337,12 +337,28 @@ class WaveformTracker {
     }
 
     /**
-     * Debug logging
+     * Debug logging - only emitted when debug mode is enabled.
      */
     log(...args) {
         if (this.debug) {
             console.log('[WaveformTracker]', ...args);
         }
+    }
+
+    /**
+     * Recoverable / configuration warning - always emitted so integration
+     * mistakes surface even when debug mode is off.
+     */
+    warn(...args) {
+        console.warn('[WaveformTracker]', ...args);
+    }
+
+    /**
+     * Genuine failure - always emitted so dropped events and thrown handlers
+     * surface even when debug mode is off.
+     */
+    error(...args) {
+        console.error('[WaveformTracker]', ...args);
     }
 
     /**
