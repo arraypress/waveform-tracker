@@ -13,6 +13,8 @@
     "README.md"
   ],
   "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
     "build": "npm run build:iife && npm run build:esm && npm run build:min",
     "build:iife": "esbuild src/index.js --bundle --format=iife --outfile=dist/waveform-tracker.js",
     "build:esm": "esbuild src/index.js --bundle --format=esm --outfile=dist/waveform-tracker.esm.js",
@@ -38,6 +40,8 @@
     "@arraypress/waveform-player": "^1.8.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.9"
   }
 }
