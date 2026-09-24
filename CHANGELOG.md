@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Thresholds crossed in the last second before `ended`, `pause` or destroy
+  are no longer lost.** The checks run at most once a second, and `ended`
+  only looked at `complete` before resetting, so a `play` or `listen`
+  threshold crossed inside that window was dropped. `ended`, `pause` and
+  `untrackPlayer()` (which `waveformplayer:destroy` calls) now run every check
+  unthrottled first.
+
 ## [1.0.2] — 2026-09-24
 
 ### Fixed

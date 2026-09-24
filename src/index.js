@@ -98,6 +98,10 @@ class WaveformTracker {
             // currentTime seen while tracking; null resets the delta baseline.
             lastTime: null,
             elapsedTime: 0,
+            // Last known position/duration, for the unthrottled checks run on
+            // pause and untrack (whose events carry no time).
+            lastPosition: null,
+            lastDuration: null,
             sentEvents: new Set(),
             isTracking: false,
             lastCheck: null
@@ -122,6 +126,7 @@ class WaveformTracker {
 
             pause: () => {
                 if (tracker.isTracking) {
+                    this.flush(tracker);
                     tracker.isTracking = false;
                     tracker.lastTime = null;
                     this.log('Paused. Total media time:', tracker.elapsedTime);
@@ -145,6 +150,8 @@ class WaveformTracker {
                         }
                     }
                     tracker.lastTime = currentTime;
+                    tracker.lastPosition = currentTime;
+                    tracker.lastDuration = duration;
                 }
 
                 // Throttle the event-firing checks to once per second
@@ -152,32 +159,12 @@ class WaveformTracker {
                 if (tracker.lastCheck && now - tracker.lastCheck < 1000) return;
                 tracker.lastCheck = now;
 
-                const totalElapsed = tracker.elapsedTime;
-                const percentComplete = (currentTime / duration) * 100;
-
-                // Check for events to fire
-                const events = this.config.events;
-
-                // Play event (time-based)
-                if (events.play && totalElapsed >= events.play && !tracker.sentEvents.has('play')) {
-                    this.sendEvent(tracker, 'play', Math.floor(totalElapsed), duration);
-                    tracker.sentEvents.add('play');
-                }
-
-                // Listen event (time-based)
-                if (events.listen && totalElapsed >= events.listen && !tracker.sentEvents.has('listen')) {
-                    this.sendEvent(tracker, 'listen', Math.floor(totalElapsed), duration);
-                    tracker.sentEvents.add('listen');
-                }
-
-                // Complete event (percent-based)
-                if (events.complete && percentComplete >= events.complete && !tracker.sentEvents.has('complete')) {
-                    this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
-                    tracker.sentEvents.add('complete');
-                }
+                this.checkEvents(tracker, currentTime, duration);
             },
 
             ended: (e) => {
+                this.syncTrack(tracker);
+
                 // Read time from the event detail so this works in BOTH self and
                 // external audio modes (in external mode player.audio is null).
                 // v1.8.0+ dispatches ended with { currentTime, duration } and
@@ -191,18 +178,16 @@ class WaveformTracker {
                 tracker.isTracking = false;
                 tracker.lastTime = null;
 
-                // Check if we should send complete event
-                const events = this.config.events;
-                if (events.complete && !tracker.sentEvents.has('complete')) {
-                    if (duration > 0) {
-                        this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
-                        tracker.sentEvents.add('complete');
-                    }
-                }
+                // Unthrottled: thresholds crossed since the last throttled
+                // check would otherwise be wiped by the reset below. The
+                // position is the end, so complete is checked here too.
+                this.checkEvents(tracker, currentTime, duration);
 
                 // Reset for replay
                 tracker.sentEvents.clear();
                 tracker.elapsedTime = 0;
+                tracker.lastPosition = null;
+                tracker.lastDuration = null;
                 tracker.lastCheck = null;
             }
         };
@@ -231,7 +216,53 @@ class WaveformTracker {
         tracker.sentEvents.clear();
         tracker.elapsedTime = 0;
         tracker.lastTime = null;
+        tracker.lastPosition = null;
+        tracker.lastDuration = null;
         tracker.lastCheck = null;
+    }
+
+    /**
+     * Fire any play/listen/complete events whose threshold has been reached.
+     * @param {Object} tracker - Tracker state for a player
+     * @param {number} currentTime - Playhead position (seconds)
+     * @param {number} duration - Track duration (seconds)
+     */
+    checkEvents(tracker, currentTime, duration) {
+        const totalElapsed = tracker.elapsedTime;
+        const percentComplete = (currentTime / duration) * 100;
+        const events = this.config.events;
+
+        // Play event (time-based)
+        if (events.play && totalElapsed >= events.play && !tracker.sentEvents.has('play')) {
+            this.sendEvent(tracker, 'play', Math.floor(totalElapsed), duration);
+            tracker.sentEvents.add('play');
+        }
+
+        // Listen event (time-based)
+        if (events.listen && totalElapsed >= events.listen && !tracker.sentEvents.has('listen')) {
+            this.sendEvent(tracker, 'listen', Math.floor(totalElapsed), duration);
+            tracker.sentEvents.add('listen');
+        }
+
+        // Complete event (percent-based; needs a known duration)
+        if (events.complete && duration > 0 && percentComplete >= events.complete && !tracker.sentEvents.has('complete')) {
+            this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
+            tracker.sentEvents.add('complete');
+        }
+    }
+
+    /**
+     * Run the event checks unthrottled at the last known position, so
+     * thresholds crossed inside the 1s throttle window aren't lost when
+     * playback stops (pause) or tracking ends (untrack/destroy).
+     * @param {Object} tracker - Tracker state for a player
+     */
+    flush(tracker) {
+        if (!tracker.isTracking) return;
+        // A track swapped in since the last timeupdate owns nothing yet.
+        this.syncTrack(tracker);
+        if (tracker.lastDuration === null) return;
+        this.checkEvents(tracker, tracker.lastPosition, tracker.lastDuration);
     }
 
     /**
@@ -241,6 +272,9 @@ class WaveformTracker {
     untrackPlayer(player) {
         const tracker = this.trackers.get(player);
         if (!tracker) return;
+
+        // Deliver anything pending before the state is dropped
+        this.flush(tracker);
 
         // Remove event listeners
         const container = player.container;

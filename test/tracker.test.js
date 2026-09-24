@@ -260,3 +260,55 @@ describe('teardown', () => {
 		expect(tracker.getTrackedCount()).toBe(0);
 	});
 });
+
+describe('thresholds crossed inside the throttle window', () => {
+	/**
+	 * Cross the listen threshold without letting the 1s throttle pass: the
+	 * first tick runs the check (and arms the throttle), the rest are skipped.
+	 */
+	function crossUnchecked(p) {
+		fire(p, 'play');
+		for (let t = 0; t <= 5; t++) timeupdate(p, t);
+	}
+
+	function setup() {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { listen: 5 }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		return { events, p };
+	}
+
+	it('are sent on ended', () => {
+		const { events, p } = setup();
+		crossUnchecked(p);
+		expect(events).toEqual([]);
+
+		fire(p, 'ended', { currentTime: 100, duration: 100 });
+		expect(events.map((e) => [e.event, e.time])).toEqual([['listen', 5]]);
+	});
+
+	it('are sent on pause', () => {
+		const { events, p } = setup();
+		crossUnchecked(p);
+		fire(p, 'pause');
+		expect(events.map((e) => [e.event, e.time, e.duration])).toEqual([['listen', 5, 100]]);
+	});
+
+	it('are sent when the player is untracked (destroyed)', () => {
+		const { events, p } = setup();
+		crossUnchecked(p);
+		tracker.untrackPlayer(p);
+		expect(events.map((e) => e.event)).toEqual(['listen']);
+	});
+
+	it('are not sent twice once the throttle catches up', () => {
+		const { events, p } = setup();
+		crossUnchecked(p);
+		fire(p, 'pause');
+		fire(p, 'play');
+		timeupdate(p, 6, 100, 2000);
+		timeupdate(p, 7, 100, 2000);
+		expect(events.map((e) => e.event)).toEqual(['listen']);
+	});
+});
