@@ -30,6 +30,12 @@ function timeupdate(player, currentTime, duration = 100, advanceMs = 0) {
 	fire(player, 'timeupdate', { currentTime, duration });
 }
 
+/** Play from 0 to `seconds` in 1s steps without letting the throttle pass. */
+function hear(player, seconds, duration = 100) {
+	fire(player, 'play');
+	for (let t = 0; t <= seconds; t++) timeupdate(player, t, duration);
+}
+
 beforeEach(() => {
 	now = 1_000_000;
 	vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -122,7 +128,7 @@ describe('engagement accounting', () => {
 		const p = fakePlayer();
 		tracker.trackPlayer(p);
 
-		fire(p, 'play');
+		hear(p, 60);
 		fire(p, 'ended', { currentTime: 100, duration: 100 });
 
 		const complete = events.find((e) => e.event === 'complete');
@@ -194,7 +200,7 @@ describe('delivery', () => {
 		tracker.init({ endpoint: '/collect', events: { complete: 95 }, session: false });
 		const p = fakePlayer();
 		tracker.trackPlayer(p);
-		fire(p, 'play');
+		hear(p, 60);
 		fire(p, 'ended', { currentTime: 100, duration: 100 });
 
 		expect(beacon).toHaveBeenCalledTimes(1);
@@ -225,7 +231,7 @@ describe('delivery', () => {
 		const p = fakePlayer();
 		tracker.trackPlayer(p);
 
-		fire(p, 'play');
+		hear(p, 60);
 		fire(p, 'ended', { currentTime: 100, duration: 100 });
 
 		expect(handler).toHaveBeenCalledTimes(1);
@@ -356,5 +362,44 @@ describe('background tabs (timeupdate gaps)', () => {
 		fire(p, 'ended', { currentTime: 100, duration: 100 });
 
 		expect(events.map((e) => [e.event, e.time])).toEqual([['listen', 40]]);
+	});
+});
+
+describe('complete requires engagement', () => {
+	function setup() {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { complete: 90 }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		fire(p, 'play');
+		return { events, p };
+	}
+
+	it('does not fire when the listener scrubs past the threshold', () => {
+		const { events, p } = setup();
+		timeupdate(p, 0);
+		timeupdate(p, 1);
+		timeupdate(p, 95, 100, 1000);          // seek to 95%, 1s heard
+		timeupdate(p, 96, 100, 1000);
+
+		expect(events).toEqual([]);
+	});
+
+	it('does not fire on ended after a scrub to the end', () => {
+		const { events, p } = setup();
+		timeupdate(p, 0);
+		timeupdate(p, 1);
+		timeupdate(p, 99, 100, 1000);
+		fire(p, 'ended', { currentTime: 100, duration: 100 });
+
+		expect(events).toEqual([]);
+	});
+
+	it('fires once half the audio up to the threshold was heard', () => {
+		const { events, p } = setup();
+		for (let t = 0; t <= 45; t++) timeupdate(p, t); // 45s heard = 90% x 50%
+		timeupdate(p, 92, 100, 1000);          // then skip ahead
+
+		expect(events.map((e) => [e.event, e.time])).toEqual([['complete', 92]]);
 	});
 });

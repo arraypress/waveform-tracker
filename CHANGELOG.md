@@ -20,6 +20,17 @@ All notable changes to this project will be documented in this file.
   `untrackPlayer()` (which `waveformplayer:destroy` calls) now run every check
   unthrottled first.
 
+### Changed
+
+- **`complete` needs real listening, not just the playhead position.** It
+  fired as soon as the position reached the threshold, so scrubbing to 95% (or
+  to the end, via `ended`) counted as a completion with a second heard. It now
+  also requires the listener to have heard half the audio up to the threshold
+  (`COMPLETE_ENGAGEMENT`, 0.5), in media time: with `complete: 90` on a
+  4-minute track, 108s. Both the timeupdate and `ended` paths apply it.
+  **Expect fewer `complete` events**: skip-to-the-end sessions no longer
+  count.
+
 ## [1.0.2] — 2026-09-24
 
 ### Fixed

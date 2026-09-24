@@ -283,8 +283,13 @@ class WaveformTracker {
             tracker.sentEvents.add('listen');
         }
 
-        // Complete event (percent-based; needs a known duration)
-        if (events.complete && duration > 0 && percentComplete >= events.complete && !tracker.sentEvents.has('complete')) {
+        // Complete event (percent-based; needs a known duration). Position
+        // alone would let a scrub to the end count, so the listener must also
+        // have heard COMPLETE_ENGAGEMENT of the audio up to the threshold:
+        // at complete: 90 on a 100s track, 45s of media time.
+        if (events.complete && duration > 0 && percentComplete >= events.complete
+            && totalElapsed >= duration * (events.complete / 100) * WaveformTracker.COMPLETE_ENGAGEMENT
+            && !tracker.sentEvents.has('complete')) {
             this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
             tracker.sentEvents.add('complete');
         }
@@ -506,6 +511,10 @@ WaveformTracker.SEEK_THRESHOLD = 5;
 
 // Seconds of headroom added to the wall-clock allowance for large jumps.
 WaveformTracker.SEEK_SLACK = 1;
+
+// Share of the audio up to the complete threshold that must have been heard
+// (media time) before complete fires, so seeking to the end doesn't count.
+WaveformTracker.COMPLETE_ENGAGEMENT = 0.5;
 
 // Create singleton instance
 const tracker = new WaveformTracker();
