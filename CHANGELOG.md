@@ -34,6 +34,10 @@ All notable changes to this project will be documented in this file.
   4-minute track, 108s. Both the timeupdate and `ended` paths apply it.
   **Expect fewer `complete` events**: skip-to-the-end sessions no longer
   count.
+- **A threshold of `0` fires instead of disabling the event.** `events.play: 0`
+  (or `listen: 0`, `complete: 0`) was falsy and silently turned the event off;
+  it now fires on the first check after playback starts. Omitting the key,
+  `null` or `false` still disables an event.
 
 ## [1.0.2] — 2026-09-24
 

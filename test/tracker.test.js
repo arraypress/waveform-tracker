@@ -429,3 +429,31 @@ describe('live streams (non-finite duration)', () => {
 		expect(events).toEqual([]);
 	});
 });
+
+describe('zero thresholds', () => {
+	it('fires a 0s play event on the first timeupdate after play', () => {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { play: 0 }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		fire(p, 'play');
+		timeupdate(p, 0);
+
+		expect(events.map((e) => [e.event, e.time])).toEqual([['play', 0]]);
+	});
+
+	it('still disables events set to null or false, and accepts numeric strings', () => {
+		const events = [];
+		tracker.init({
+			handler: (e) => events.push(e),
+			events: { play: null, listen: false, complete: '90' },
+			session: false,
+		});
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		hear(p, 60);
+		fire(p, 'ended', { currentTime: 100, duration: 100 });
+
+		expect(events.map((e) => e.event)).toEqual(['complete']);
+	});
+});

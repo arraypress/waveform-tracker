@@ -269,16 +269,18 @@ class WaveformTracker {
     checkEvents(tracker, currentTime, duration) {
         const totalElapsed = tracker.elapsedTime;
         const percentComplete = (currentTime / duration) * 100;
-        const events = this.config.events;
+        const play = this.threshold(this.config.events.play);
+        const listen = this.threshold(this.config.events.listen);
+        const complete = this.threshold(this.config.events.complete);
 
         // Play event (time-based)
-        if (events.play && totalElapsed >= events.play && !tracker.sentEvents.has('play')) {
+        if (play !== null && totalElapsed >= play && !tracker.sentEvents.has('play')) {
             this.sendEvent(tracker, 'play', Math.floor(totalElapsed), duration);
             tracker.sentEvents.add('play');
         }
 
         // Listen event (time-based)
-        if (events.listen && totalElapsed >= events.listen && !tracker.sentEvents.has('listen')) {
+        if (listen !== null && totalElapsed >= listen && !tracker.sentEvents.has('listen')) {
             this.sendEvent(tracker, 'listen', Math.floor(totalElapsed), duration);
             tracker.sentEvents.add('listen');
         }
@@ -288,12 +290,25 @@ class WaveformTracker {
         // alone would let a scrub to the end count, so the listener must also
         // have heard COMPLETE_ENGAGEMENT of the audio up to the threshold:
         // at complete: 90 on a 100s track, 45s of media time.
-        if (events.complete && Number.isFinite(duration) && duration > 0 && percentComplete >= events.complete
-            && totalElapsed >= duration * (events.complete / 100) * WaveformTracker.COMPLETE_ENGAGEMENT
+        if (complete !== null && Number.isFinite(duration) && duration > 0 && percentComplete >= complete
+            && totalElapsed >= duration * (complete / 100) * WaveformTracker.COMPLETE_ENGAGEMENT
             && !tracker.sentEvents.has('complete')) {
             this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
             tracker.sentEvents.add('complete');
         }
+    }
+
+    /**
+     * Normalise an events threshold. A missing key, null or false disables
+     * the event; 0 is a real threshold (fire on the first check after play).
+     * Numeric strings are accepted, as the old truthy check did.
+     * @param {*} value - Configured threshold
+     * @returns {number|null} The threshold, or null when disabled
+     */
+    threshold(value) {
+        if (value == null || value === false || value === '') return null;
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
     }
 
     /**
