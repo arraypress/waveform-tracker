@@ -58,6 +58,19 @@ All notable changes to this project will be documented in this file.
   preflight for `Content-Type`. Same-origin endpoints keep using `sendBeacon`
   (unless custom `headers` are set), and it remains the fallback when `fetch`
   is unavailable.
+- **The package declares `"type": "module"` and an `exports` map.** `import`
+  resolves to the ESM build and `require` to the new CJS build;
+  `./dist/*`, `./src/*` and `./package.json` stay reachable. Paths outside
+  those are no longer importable.
+
+### Added
+
+- **A CommonJS build, `dist/waveform-tracker.cjs`, now the `main` entry.**
+  `main` pointed at the IIFE bundle, so `require('@arraypress/waveform-tracker')`
+  returned `{}`. It now returns `{ default: tracker }`, matching
+  `@arraypress/waveform-player`'s CJS build.
+- **`prepublishOnly` runs the tests and a fresh build**, so `npm publish` can't
+  ship a stale `dist/`.
 
 ## [1.0.2] — 2026-09-24
 

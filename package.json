@@ -5,8 +5,19 @@
     "access": "public"
   },
   "description": "Simple analytics tracking for WaveformPlayer",
-  "main": "dist/waveform-tracker.js",
+  "type": "module",
+  "main": "dist/waveform-tracker.cjs",
   "module": "dist/waveform-tracker.esm.js",
+  "exports": {
+    ".": {
+      "import": "./dist/waveform-tracker.esm.js",
+      "require": "./dist/waveform-tracker.cjs",
+      "default": "./dist/waveform-tracker.esm.js"
+    },
+    "./dist/*": "./dist/*",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist/",
     "src/",
@@ -15,12 +26,14 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "npm run build:iife && npm run build:esm && npm run build:min",
+    "build": "npm run build:iife && npm run build:esm && npm run build:cjs && npm run build:min",
     "build:iife": "esbuild src/index.js --bundle --format=iife --outfile=dist/waveform-tracker.js",
     "build:esm": "esbuild src/index.js --bundle --format=esm --outfile=dist/waveform-tracker.esm.js",
+    "build:cjs": "esbuild src/index.js --bundle --format=cjs --outfile=dist/waveform-tracker.cjs",
     "build:min": "esbuild src/index.js --bundle --format=iife --minify --outfile=dist/waveform-tracker.min.js",
     "dev": "esbuild src/index.js --bundle --format=iife --outfile=dist/waveform-tracker.js --watch",
-    "serve": "npx http-server -p 8000"
+    "serve": "npx http-server -p 8000",
+    "prepublishOnly": "npm test && npm run build"
   },
   "keywords": [
     "audio",
