@@ -17,6 +17,11 @@ All notable changes to this project will be documented in this file.
   is `Infinity`, which JSON serialises as `null`; payloads now always carry a
   number, with `0` meaning unknown. `complete` is explicitly skipped when the
   duration isn't finite (it could never fire, but only by accident).
+- **`reset()` fully detaches the tracker.** It cleared the config but left the
+  document `ready`/`destroy` listeners attached, so a player created afterwards
+  was still tracked and its first timeupdate threw (`this.config` was `null`).
+  `reset()` now removes those listeners, and `trackPlayer()` without a config
+  (before `init()` or after `reset()`) warns and does nothing.
 - **Thresholds crossed in the last second before `ended`, `pause` or destroy
   are no longer lost.** The checks run at most once a second, and `ended`
   only looked at `complete` before resetting, so a `play` or `listen`
@@ -38,6 +43,11 @@ All notable changes to this project will be documented in this file.
   (or `listen: 0`, `complete: 0`) was falsy and silently turned the event off;
   it now fires on the first check after playback starts. Omitting the key,
   `null` or `false` still disables an event.
+- **`init()` can be called more than once.** Each call added another pair of
+  document listeners, so every player was handled twice per extra call. A
+  second `init()` now reconfigures the tracker in place: the new config applies
+  to players already tracked, and the session id is kept, since it's the same
+  page session. After `reset()`, `init()` starts afresh with a new id.
 
 ## [1.0.2] — 2026-09-24
 

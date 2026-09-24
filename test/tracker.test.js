@@ -457,3 +457,62 @@ describe('zero thresholds', () => {
 		expect(events.map((e) => e.event)).toEqual(['complete']);
 	});
 });
+
+describe('init/reset lifecycle', () => {
+	function announce(p) {
+		document.dispatchEvent(new CustomEvent('waveformplayer:ready', { detail: { player: p, url: p.options.url } }));
+	}
+
+	it('stops tracking new players after reset()', () => {
+		const errors = [];
+		const onError = (e) => { errors.push(e.error); e.preventDefault(); };
+		window.addEventListener('error', onError);
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		tracker.init({ handler: () => {}, events: { listen: 1 }, session: false });
+		tracker.reset();
+
+		const p = fakePlayer();
+		announce(p);
+		expect(tracker.getTrackedCount()).toBe(0);
+
+		fire(p, 'play');
+		timeupdate(p, 1, 100, 2000);
+		window.removeEventListener('error', onError);
+		expect(errors).toEqual([]);
+	});
+
+	it('ignores trackPlayer() before init() / after reset()', () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		tracker.init({ handler: () => {}, session: false });
+		tracker.reset();
+		tracker.trackPlayer(fakePlayer());
+		expect(tracker.getTrackedCount()).toBe(0);
+	});
+
+	it('does not stack document listeners when init() is called twice', () => {
+		tracker.init({ handler: () => {}, session: false });
+		tracker.init({ handler: () => {}, session: false });
+		const spy = vi.spyOn(tracker, 'trackPlayer');
+
+		announce(fakePlayer());
+		expect(spy).toHaveBeenCalledTimes(1);
+	});
+
+	it('a second init() reconfigures the players already tracked', () => {
+		const first = [];
+		const second = [];
+		tracker.init({ handler: (e) => first.push(e), events: { listen: 5 }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+
+		tracker.init({ handler: (e) => second.push(e), events: { listen: 5 }, session: false });
+		expect(tracker.getTrackedCount()).toBe(1);
+		hear(p, 6);
+		fire(p, 'pause');
+
+		expect(first).toEqual([]);
+		expect(second.map((e) => e.event)).toEqual(['listen']);
+	});
+});

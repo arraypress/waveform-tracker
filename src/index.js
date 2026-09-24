@@ -12,10 +12,15 @@ class WaveformTracker {
         this.trackers = new Map();
         this.debug = false;
         this.sessionId = null;
+        // document-level ready/destroy listeners, added once by init() and
+        // removed by reset()
+        this.listeners = null;
     }
 
     /**
-     * Initialize tracker with configuration
+     * Initialize tracker with configuration. Calling it again reconfigures
+     * the tracker (players already tracked keep their state) rather than
+     * adding a second set of listeners.
      * @param {Object} config - Tracker configuration
      */
     init(config = {}) {
@@ -31,28 +36,40 @@ class WaveformTracker {
         };
 
         this.debug = this.config.debug;
-        this.sessionId = this.config.session ? this.generateSessionId() : null;
+        // A reconfigure is still the same page session, so keep its id
+        this.sessionId = this.config.session
+            ? (this.sessionId || this.generateSessionId())
+            : null;
 
         // Validate config
         if (!this.config.endpoint && !this.config.handler) {
             this.warn('No endpoint or handler configured; events will not be delivered');
         }
 
-        // Listen for waveform players being ready using event capturing
-        document.addEventListener('waveformplayer:ready', (e) => {
-            this.log('Player ready event caught:', e.detail.url);
-            this.trackPlayer(e.detail.player);
-        }, true); // TRUE enables capturing phase
+        if (!this.listeners) {
+            this.listeners = {
+                // Listen for waveform players being ready
+                ready: (e) => {
+                    this.log('Player ready event caught:', e.detail.url);
+                    this.trackPlayer(e.detail.player);
+                },
 
-        // Tear down trackers when a player is destroyed. Without this the
-        // trackers Map keeps a strong reference to every player (and its DOM)
-        // forever, leaking them in SPAs that create/destroy players (v1.8.0+).
-        document.addEventListener('waveformplayer:destroy', (e) => {
-            this.log('Player destroy event caught:', e.detail?.url);
-            if (e.detail?.player) {
-                this.untrackPlayer(e.detail.player);
-            }
-        }, true);
+                // Tear down trackers when a player is destroyed. Without this
+                // the trackers Map keeps a strong reference to every player
+                // (and its DOM) forever, leaking them in SPAs that
+                // create/destroy players (v1.8.0+).
+                destroy: (e) => {
+                    this.log('Player destroy event caught:', e.detail?.url);
+                    if (e.detail?.player) {
+                        this.untrackPlayer(e.detail.player);
+                    }
+                }
+            };
+
+            // TRUE enables capturing phase
+            document.addEventListener('waveformplayer:ready', this.listeners.ready, true);
+            document.addEventListener('waveformplayer:destroy', this.listeners.destroy, true);
+        }
 
         // Track any existing players that might already be initialized
         this.trackAllPlayers();
@@ -75,6 +92,12 @@ class WaveformTracker {
      * @param {WaveformPlayer} player - Player instance to track
      */
     trackPlayer(player) {
+        // Nothing to report to before init() or after reset()
+        if (!this.config) {
+            this.warn('Call init() before tracking players');
+            return;
+        }
+
         // Validate player
         if (!player || !player.container || !player.options) {
             this.warn('Ignoring invalid player instance');
@@ -137,7 +160,7 @@ class WaveformTracker {
             },
 
             timeupdate: (e) => {
-                if (!tracker.isTracking) return;
+                if (!tracker.isTracking || !this.config) return;
                 this.syncTrack(tracker);
 
                 const {currentTime, duration} = e.detail;
@@ -159,6 +182,7 @@ class WaveformTracker {
             },
 
             ended: (e) => {
+                if (!this.config) return;
                 this.syncTrack(tracker);
 
                 // Read time from the event detail so this works in BOTH self and
@@ -267,6 +291,8 @@ class WaveformTracker {
      * @param {number} duration - Track duration (seconds)
      */
     checkEvents(tracker, currentTime, duration) {
+        if (!this.config) return;
+
         const totalElapsed = tracker.elapsedTime;
         const percentComplete = (currentTime / duration) * 100;
         const play = this.threshold(this.config.events.play);
@@ -484,13 +510,20 @@ class WaveformTracker {
     }
 
     /**
-     * Reset tracker - removes all tracking
+     * Reset tracker - removes all tracking, including the document
+     * listeners, so players created afterwards are ignored until init()
      */
     reset() {
         // Untrack all players
         this.trackers.forEach((tracker, player) => {
             this.untrackPlayer(player);
         });
+
+        if (this.listeners) {
+            document.removeEventListener('waveformplayer:ready', this.listeners.ready, true);
+            document.removeEventListener('waveformplayer:destroy', this.listeners.destroy, true);
+            this.listeners = null;
+        }
 
         this.trackers.clear();
         this.config = null;
