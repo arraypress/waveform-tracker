@@ -130,6 +130,61 @@ describe('engagement accounting', () => {
 	});
 });
 
+describe('track changes on the same player (#30)', () => {
+	/** Play `p` from 0 to `seconds`, letting the throttle pass on the last tick. */
+	function listen(p, seconds) {
+		fire(p, 'play');
+		for (let t = 0; t <= seconds; t++) timeupdate(p, t);
+		timeupdate(p, seconds + 1, 100, 1000);
+	}
+
+	it('reports the new url and re-fires events after a mid-play swap', () => {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { listen: 5 }, session: false });
+		const p = fakePlayer('/audio/a.mp3');
+		tracker.trackPlayer(p);
+
+		listen(p, 6);
+		expect(events.map((e) => [e.event, e.url])).toEqual([['listen', '/audio/a.mp3']]);
+
+		// load()/loadTrack() swap the url without an `ended` in between.
+		p.options.url = '/audio/b.mp3';
+		listen(p, 6);
+		expect(events.map((e) => [e.event, e.url])).toEqual([
+			['listen', '/audio/a.mp3'],
+			['listen', '/audio/b.mp3'],
+		]);
+	});
+
+	it('does not carry the previous track\'s elapsed time over', () => {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { listen: 5 }, session: false });
+		const p = fakePlayer('/audio/a.mp3');
+		tracker.trackPlayer(p);
+
+		listen(p, 3);                          // 4s on a, under the threshold
+		p.options.url = '/audio/b.mp3';
+		listen(p, 2);                          // 3s on b; 7s combined would fire
+
+		expect(events).toEqual([]);
+		expect(tracker.getStats()[0]).toMatchObject({ url: '/audio/b.mp3', elapsedTime: 3 });
+	});
+
+	it('keeps accumulating while the url is unchanged', () => {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { listen: 5 }, session: false });
+		const p = fakePlayer('/audio/a.mp3');
+		tracker.trackPlayer(p);
+
+		listen(p, 3);
+		fire(p, 'pause');
+		fire(p, 'play');                       // resume: same track, no reset
+		for (let t = 4; t <= 6; t++) timeupdate(p, t, 100, 1000);
+
+		expect(events.map((e) => e.event)).toEqual(['listen']);
+	});
+});
+
 describe('delivery', () => {
 	it('uses sendBeacon for terminal events when no custom headers are set', () => {
 		const beacon = vi.fn(() => true);

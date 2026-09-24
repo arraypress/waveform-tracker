@@ -88,6 +88,10 @@ class WaveformTracker {
 
         const tracker = {
             player: player,
+            // The URL this state belongs to. load()/loadTrack() swap tracks on
+            // the same player without firing `ended`, so syncTrack() compares
+            // against it and resets the per-track state on a change.
+            url: player.options.url,
             // Engagement is accumulated from media-time (currentTime) deltas
             // rather than wall-clock, so faster playback (1.5x/2x) is credited
             // for the content actually consumed. lastTime is the previous
@@ -108,6 +112,7 @@ class WaveformTracker {
         // Store event handlers so we can remove them later
         tracker.handlers = {
             play: () => {
+                this.syncTrack(tracker);
                 tracker.isTracking = true;
                 // Reset the media-time baseline; the next timeupdate just
                 // records the position without crediting a delta.
@@ -125,6 +130,7 @@ class WaveformTracker {
 
             timeupdate: (e) => {
                 if (!tracker.isTracking) return;
+                this.syncTrack(tracker);
 
                 const {currentTime, duration} = e.detail;
 
@@ -206,6 +212,26 @@ class WaveformTracker {
         container.addEventListener('waveformplayer:pause', tracker.handlers.pause);
         container.addEventListener('waveformplayer:timeupdate', tracker.handlers.timeupdate);
         container.addEventListener('waveformplayer:ended', tracker.handlers.ended);
+    }
+
+    /**
+     * Reset per-track state when the player has moved on to a different URL.
+     *
+     * Engagement and sent events are per track, but a player instance can
+     * outlive many tracks. Without this, a track swapped in mid-play inherited
+     * the previous track's elapsed time and never re-sent play/listen/complete.
+     * @param {Object} tracker - Tracker state for a player
+     */
+    syncTrack(tracker) {
+        const url = tracker.player.options?.url;
+        if (url === tracker.url) return;
+
+        this.log('Track changed:', tracker.url, '->', url);
+        tracker.url = url;
+        tracker.sentEvents.clear();
+        tracker.elapsedTime = 0;
+        tracker.lastTime = null;
+        tracker.lastCheck = null;
     }
 
     /**
