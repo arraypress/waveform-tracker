@@ -48,6 +48,16 @@ All notable changes to this project will be documented in this file.
   second `init()` now reconfigures the tracker in place: the new config applies
   to players already tracked, and the session id is kept, since it's the same
   page session. After `reset()`, `init()` starts afresh with a new id.
+- **Cross-origin endpoints receive `listen` and `complete` via `fetch`
+  `keepalive` instead of `sendBeacon`.** A beacon's `application/json` body
+  isn't CORS-safelisted and beacons always send credentials, so an endpoint on
+  another origin answering `Access-Control-Allow-Origin: *` never got those
+  events — and `sendBeacon` still reported success, so nothing fell back.
+  Terminal events to another origin now use `fetch` with `keepalive: true`
+  (still `Content-Type: application/json`); the endpoint must answer the CORS
+  preflight for `Content-Type`. Same-origin endpoints keep using `sendBeacon`
+  (unless custom `headers` are set), and it remains the fallback when `fetch`
+  is unavailable.
 
 ## [1.0.2] — 2026-09-24
 

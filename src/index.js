@@ -424,7 +424,7 @@ class WaveformTracker {
         }
 
         // Otherwise POST to endpoint. 'complete' and 'listen' are terminal /
-        // near-unload events, so deliver them with sendBeacon/keepalive.
+        // near-unload events, so deliver them in a way that survives unload.
         if (this.config.endpoint) {
             const terminal = eventType === 'complete' || eventType === 'listen';
             this.send(this.config.endpoint, payload, terminal);
@@ -435,9 +435,18 @@ class WaveformTracker {
      * Deliver a payload to the configured endpoint.
      *
      * Terminal events (complete, listen) often fire as the page is navigating
-     * away, where a normal fetch would be cancelled. For those we prefer
-     * navigator.sendBeacon and fall back to fetch with keepalive so the
-     * request survives unload. The endpoint and payload shape are unchanged.
+     * away, where a normal fetch would be cancelled, so they are sent with
+     * fetch keepalive, which survives unload. The body is always JSON with
+     * Content-Type: application/json; the endpoint and payload shape are
+     * unchanged.
+     *
+     * sendBeacon is used only for a same-origin endpoint (or when fetch is
+     * missing). Cross-origin, a beacon's JSON content type isn't
+     * CORS-safelisted and beacons always send credentials, so an endpoint
+     * answering Access-Control-Allow-Origin: * never receives the event —
+     * yet sendBeacon still returns true, leaving no chance to fall back.
+     * fetch uses credentials only same-origin, so a wildcard endpoint that
+     * answers the preflight for Content-Type works.
      *
      * @param {string} endpoint - Destination URL
      * @param {Object} payload - Event payload
@@ -445,14 +454,9 @@ class WaveformTracker {
      */
     send(endpoint, payload, terminal = false) {
         const body = JSON.stringify(payload);
-        const hasCustomHeaders = this.config.headers
-            && Object.keys(this.config.headers).length > 0;
+        const hasFetch = typeof fetch === 'function';
 
-        // sendBeacon cannot set custom headers, so only use it when none are
-        // configured; otherwise fall through to fetch (which preserves them).
-        if (terminal && !hasCustomHeaders
-            && typeof navigator !== 'undefined'
-            && typeof navigator.sendBeacon === 'function') {
+        if (terminal && this.canBeacon(endpoint, hasFetch)) {
             try {
                 const blob = new Blob([body], {type: 'application/json'});
                 if (navigator.sendBeacon(endpoint, blob)) {
@@ -462,6 +466,11 @@ class WaveformTracker {
             } catch (error) {
                 this.log('sendBeacon failed, falling back to fetch:', error);
             }
+        }
+
+        if (!hasFetch) {
+            this.error('fetch is unavailable; event not delivered');
+            return;
         }
 
         fetch(endpoint, {
@@ -475,6 +484,36 @@ class WaveformTracker {
         }).catch(error => {
             this.error('Failed to send event:', error);
         });
+    }
+
+    /**
+     * Whether a terminal event may go by sendBeacon: the API exists, no
+     * custom headers are configured (a beacon can't set them), and the
+     * endpoint is same-origin or fetch is unavailable (see send()).
+     * @param {string} endpoint - Destination URL
+     * @param {boolean} hasFetch - Whether fetch is available
+     */
+    canBeacon(endpoint, hasFetch) {
+        const hasCustomHeaders = this.config.headers
+            && Object.keys(this.config.headers).length > 0;
+        if (hasCustomHeaders
+            || typeof navigator === 'undefined'
+            || typeof navigator.sendBeacon !== 'function') {
+            return false;
+        }
+        return !hasFetch || this.isSameOrigin(endpoint);
+    }
+
+    /**
+     * Whether an endpoint (absolute or relative) is on the page's origin.
+     * @param {string} endpoint - Destination URL
+     */
+    isSameOrigin(endpoint) {
+        try {
+            return new URL(endpoint, window.location.href).origin === window.location.origin;
+        } catch (error) {
+            return false;
+        }
     }
 
     /**

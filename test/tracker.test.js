@@ -516,3 +516,47 @@ describe('init/reset lifecycle', () => {
 		expect(second.map((e) => e.event)).toEqual(['listen']);
 	});
 });
+
+describe('terminal event delivery by origin', () => {
+	function deliver(endpoint, { withFetch = true, beaconResult = true } = {}) {
+		const beacon = vi.fn(() => beaconResult);
+		Object.defineProperty(navigator, 'sendBeacon', { configurable: true, writable: true, value: beacon });
+		if (withFetch) globalThis.fetch = vi.fn(() => Promise.resolve());
+		else delete globalThis.fetch;
+
+		tracker.init({ endpoint, events: { listen: 5 }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		hear(p, 6);
+		fire(p, 'pause');
+		return beacon;
+	}
+
+	it('uses fetch with keepalive, keeping the JSON body, for a cross-origin endpoint', () => {
+		const beacon = deliver('https://stats.example.com/collect');
+
+		expect(beacon).not.toHaveBeenCalled();
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		const [url, opts] = globalThis.fetch.mock.calls[0];
+		expect(url).toBe('https://stats.example.com/collect');
+		expect(opts).toMatchObject({ method: 'POST', keepalive: true });
+		expect(opts.headers['Content-Type']).toBe('application/json');
+		expect(JSON.parse(opts.body)).toMatchObject({ event: 'listen' });
+	});
+
+	it('uses sendBeacon for a same-origin endpoint, absolute or relative', () => {
+		expect(deliver(`${window.location.origin}/collect`)).toHaveBeenCalledTimes(1);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	it('falls back to sendBeacon cross-origin only when fetch is unavailable', () => {
+		const beacon = deliver('https://stats.example.com/collect', { withFetch: false });
+		expect(beacon).toHaveBeenCalledTimes(1);
+	});
+
+	it('falls back to fetch keepalive when sendBeacon refuses the payload', () => {
+		const beacon = deliver('/collect', { beaconResult: false });
+		expect(beacon).toHaveBeenCalledTimes(1);
+		expect(globalThis.fetch.mock.calls[0][1]).toMatchObject({ keepalive: true });
+	});
+});
