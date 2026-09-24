@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-24
+
 ### Fixed
 
 - **Listening in a background tab is counted.** Browsers throttle hidden tabs,
