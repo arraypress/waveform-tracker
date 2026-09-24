@@ -6,9 +6,12 @@
       this.trackers = /* @__PURE__ */ new Map();
       this.debug = false;
       this.sessionId = null;
+      this.listeners = null;
     }
     /**
-     * Initialize tracker with configuration
+     * Initialize tracker with configuration. Calling it again reconfigures
+     * the tracker (players already tracked keep their state) rather than
+     * adding a second set of listeners.
      * @param {Object} config - Tracker configuration
      */
     init(config = {}) {
@@ -22,20 +25,31 @@
         debug: config.debug || false
       };
       this.debug = this.config.debug;
-      this.sessionId = this.config.session ? this.generateSessionId() : null;
+      this.sessionId = this.config.session ? this.sessionId || this.generateSessionId() : null;
       if (!this.config.endpoint && !this.config.handler) {
         this.warn("No endpoint or handler configured; events will not be delivered");
       }
-      document.addEventListener("waveformplayer:ready", (e) => {
-        this.log("Player ready event caught:", e.detail.url);
-        this.trackPlayer(e.detail.player);
-      }, true);
-      document.addEventListener("waveformplayer:destroy", (e) => {
-        this.log("Player destroy event caught:", e.detail?.url);
-        if (e.detail?.player) {
-          this.untrackPlayer(e.detail.player);
-        }
-      }, true);
+      if (!this.listeners) {
+        this.listeners = {
+          // Listen for waveform players being ready
+          ready: (e) => {
+            this.log("Player ready event caught:", e.detail.url);
+            this.trackPlayer(e.detail.player);
+          },
+          // Tear down trackers when a player is destroyed. Without this
+          // the trackers Map keeps a strong reference to every player
+          // (and its DOM) forever, leaking them in SPAs that
+          // create/destroy players (v1.8.0+).
+          destroy: (e) => {
+            this.log("Player destroy event caught:", e.detail?.url);
+            if (e.detail?.player) {
+              this.untrackPlayer(e.detail.player);
+            }
+          }
+        };
+        document.addEventListener("waveformplayer:ready", this.listeners.ready, true);
+        document.addEventListener("waveformplayer:destroy", this.listeners.destroy, true);
+      }
       this.trackAllPlayers();
       this.log("Tracker initialized", this.config);
     }
@@ -53,6 +67,10 @@
      * @param {WaveformPlayer} player - Player instance to track
      */
     trackPlayer(player) {
+      if (!this.config) {
+        this.warn("Call init() before tracking players");
+        return;
+      }
       if (!player || !player.container || !player.options) {
         this.warn("Ignoring invalid player instance");
         return;
@@ -71,7 +89,14 @@
         // for the content actually consumed. lastTime is the previous
         // currentTime seen while tracking; null resets the delta baseline.
         lastTime: null,
+        // Date.now() when lastTime was recorded, so a forward jump can be
+        // compared against the real time that passed (see accumulate()).
+        lastWall: null,
         elapsedTime: 0,
+        // Last known position/duration, for the unthrottled checks run on
+        // pause and untrack (whose events carry no time).
+        lastPosition: null,
+        lastDuration: null,
         sentEvents: /* @__PURE__ */ new Set(),
         isTracking: false,
         lastCheck: null
@@ -88,58 +113,42 @@
         },
         pause: () => {
           if (tracker2.isTracking) {
+            this.flush(tracker2);
             tracker2.isTracking = false;
             tracker2.lastTime = null;
             this.log("Paused. Total media time:", tracker2.elapsedTime);
           }
         },
         timeupdate: (e) => {
-          if (!tracker2.isTracking) return;
+          if (!tracker2.isTracking || !this.config) return;
           this.syncTrack(tracker2);
           const { currentTime, duration } = e.detail;
           if (typeof currentTime === "number") {
-            if (tracker2.lastTime !== null) {
-              const delta = currentTime - tracker2.lastTime;
-              if (delta > 0 && delta < _WaveformTracker.SEEK_THRESHOLD) {
-                tracker2.elapsedTime += delta;
-              }
-            }
-            tracker2.lastTime = currentTime;
+            this.accumulate(tracker2, currentTime);
+            tracker2.lastPosition = currentTime;
+            tracker2.lastDuration = duration;
           }
           const now = Date.now();
           if (tracker2.lastCheck && now - tracker2.lastCheck < 1e3) return;
           tracker2.lastCheck = now;
-          const totalElapsed = tracker2.elapsedTime;
-          const percentComplete = currentTime / duration * 100;
-          const events = this.config.events;
-          if (events.play && totalElapsed >= events.play && !tracker2.sentEvents.has("play")) {
-            this.sendEvent(tracker2, "play", Math.floor(totalElapsed), duration);
-            tracker2.sentEvents.add("play");
-          }
-          if (events.listen && totalElapsed >= events.listen && !tracker2.sentEvents.has("listen")) {
-            this.sendEvent(tracker2, "listen", Math.floor(totalElapsed), duration);
-            tracker2.sentEvents.add("listen");
-          }
-          if (events.complete && percentComplete >= events.complete && !tracker2.sentEvents.has("complete")) {
-            this.sendEvent(tracker2, "complete", Math.floor(currentTime), duration);
-            tracker2.sentEvents.add("complete");
-          }
+          this.checkEvents(tracker2, currentTime, duration);
         },
         ended: (e) => {
+          if (!this.config) return;
+          this.syncTrack(tracker2);
           const detail = e.detail || {};
           const duration = typeof detail.duration === "number" ? detail.duration : 0;
           const currentTime = typeof detail.currentTime === "number" ? detail.currentTime : duration;
+          if (tracker2.isTracking) {
+            this.accumulate(tracker2, currentTime);
+          }
           tracker2.isTracking = false;
           tracker2.lastTime = null;
-          const events = this.config.events;
-          if (events.complete && !tracker2.sentEvents.has("complete")) {
-            if (duration > 0) {
-              this.sendEvent(tracker2, "complete", Math.floor(currentTime), duration);
-              tracker2.sentEvents.add("complete");
-            }
-          }
+          this.checkEvents(tracker2, currentTime, duration);
           tracker2.sentEvents.clear();
           tracker2.elapsedTime = 0;
+          tracker2.lastPosition = null;
+          tracker2.lastDuration = null;
           tracker2.lastCheck = null;
         }
       };
@@ -164,7 +173,93 @@
       tracker2.sentEvents.clear();
       tracker2.elapsedTime = 0;
       tracker2.lastTime = null;
+      tracker2.lastPosition = null;
+      tracker2.lastDuration = null;
       tracker2.lastCheck = null;
+    }
+    /**
+     * Credit the media time played since the previous position.
+     *
+     * Non-advances (pauses/repeats) are ignored. Small forward deltas are
+     * normal playback. A larger jump is only playback if it fits the wall-clock
+     * time that passed: background tabs throttle the player's timeupdates, so
+     * minutes of real listening can arrive as one jump. Anything clearly
+     * beyond elapsed real time is a seek and isn't credited.
+     * @param {Object} tracker - Tracker state for a player
+     * @param {number} currentTime - Playhead position (seconds)
+     */
+    accumulate(tracker2, currentTime) {
+      const now = Date.now();
+      if (tracker2.lastTime !== null) {
+        const delta = currentTime - tracker2.lastTime;
+        if (delta > 0 && (delta < _WaveformTracker.SEEK_THRESHOLD || delta <= this.playableSince(tracker2, now))) {
+          tracker2.elapsedTime += delta;
+        }
+      }
+      tracker2.lastTime = currentTime;
+      tracker2.lastWall = now;
+    }
+    /**
+     * Most media time (seconds) that could have played since lastWall: the
+     * wall time at the current rate, with 50% headroom for timer jitter plus
+     * SEEK_SLACK. External mode has no audio element, so assumes 1x.
+     * @param {Object} tracker - Tracker state for a player
+     * @param {number} now - Current Date.now()
+     */
+    playableSince(tracker2, now) {
+      const wall = (now - tracker2.lastWall) / 1e3;
+      const rate = tracker2.player.audio?.playbackRate ?? 1;
+      return wall * rate * 1.5 + _WaveformTracker.SEEK_SLACK;
+    }
+    /**
+     * Fire any play/listen/complete events whose threshold has been reached.
+     * @param {Object} tracker - Tracker state for a player
+     * @param {number} currentTime - Playhead position (seconds)
+     * @param {number} duration - Track duration (seconds)
+     */
+    checkEvents(tracker2, currentTime, duration) {
+      if (!this.config) return;
+      const totalElapsed = tracker2.elapsedTime;
+      const percentComplete = currentTime / duration * 100;
+      const play = this.threshold(this.config.events.play);
+      const listen = this.threshold(this.config.events.listen);
+      const complete = this.threshold(this.config.events.complete);
+      if (play !== null && totalElapsed >= play && !tracker2.sentEvents.has("play")) {
+        this.sendEvent(tracker2, "play", Math.floor(totalElapsed), duration);
+        tracker2.sentEvents.add("play");
+      }
+      if (listen !== null && totalElapsed >= listen && !tracker2.sentEvents.has("listen")) {
+        this.sendEvent(tracker2, "listen", Math.floor(totalElapsed), duration);
+        tracker2.sentEvents.add("listen");
+      }
+      if (complete !== null && Number.isFinite(duration) && duration > 0 && percentComplete >= complete && totalElapsed >= duration * (complete / 100) * _WaveformTracker.COMPLETE_ENGAGEMENT && !tracker2.sentEvents.has("complete")) {
+        this.sendEvent(tracker2, "complete", Math.floor(currentTime), duration);
+        tracker2.sentEvents.add("complete");
+      }
+    }
+    /**
+     * Normalise an events threshold. A missing key, null or false disables
+     * the event; 0 is a real threshold (fire on the first check after play).
+     * Numeric strings are accepted, as the old truthy check did.
+     * @param {*} value - Configured threshold
+     * @returns {number|null} The threshold, or null when disabled
+     */
+    threshold(value) {
+      if (value == null || value === false || value === "") return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+    /**
+     * Run the event checks unthrottled at the last known position, so
+     * thresholds crossed inside the 1s throttle window aren't lost when
+     * playback stops (pause) or tracking ends (untrack/destroy).
+     * @param {Object} tracker - Tracker state for a player
+     */
+    flush(tracker2) {
+      if (!tracker2.isTracking) return;
+      this.syncTrack(tracker2);
+      if (tracker2.lastDuration === null) return;
+      this.checkEvents(tracker2, tracker2.lastPosition, tracker2.lastDuration);
     }
     /**
      * Stop tracking a specific player
@@ -173,6 +268,7 @@
     untrackPlayer(player) {
       const tracker2 = this.trackers.get(player);
       if (!tracker2) return;
+      this.flush(tracker2);
       const container = player.container;
       if (container && tracker2.handlers) {
         container.removeEventListener("waveformplayer:play", tracker2.handlers.play);
@@ -199,7 +295,9 @@
         event: eventType,
         url: tracker2.player.options.url,
         time,
-        duration: Math.floor(duration),
+        // Live streams report Infinity (NaN before metadata), which JSON
+        // serialises as null; send 0 for "unknown" so it stays a number.
+        duration: Number.isFinite(duration) ? Math.floor(duration) : 0,
         page: window.location.pathname,
         ...this.config.metadata
       };
@@ -227,9 +325,18 @@
      * Deliver a payload to the configured endpoint.
      *
      * Terminal events (complete, listen) often fire as the page is navigating
-     * away, where a normal fetch would be cancelled. For those we prefer
-     * navigator.sendBeacon and fall back to fetch with keepalive so the
-     * request survives unload. The endpoint and payload shape are unchanged.
+     * away, where a normal fetch would be cancelled, so they are sent with
+     * fetch keepalive, which survives unload. The body is always JSON with
+     * Content-Type: application/json; the endpoint and payload shape are
+     * unchanged.
+     *
+     * sendBeacon is used only for a same-origin endpoint (or when fetch is
+     * missing). Cross-origin, a beacon's JSON content type isn't
+     * CORS-safelisted and beacons always send credentials, so an endpoint
+     * answering Access-Control-Allow-Origin: * never receives the event —
+     * yet sendBeacon still returns true, leaving no chance to fall back.
+     * fetch uses credentials only same-origin, so a wildcard endpoint that
+     * answers the preflight for Content-Type works.
      *
      * @param {string} endpoint - Destination URL
      * @param {Object} payload - Event payload
@@ -237,8 +344,8 @@
      */
     send(endpoint, payload, terminal = false) {
       const body = JSON.stringify(payload);
-      const hasCustomHeaders = this.config.headers && Object.keys(this.config.headers).length > 0;
-      if (terminal && !hasCustomHeaders && typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+      const hasFetch = typeof fetch === "function";
+      if (terminal && this.canBeacon(endpoint, hasFetch)) {
         try {
           const blob = new Blob([body], { type: "application/json" });
           if (navigator.sendBeacon(endpoint, blob)) {
@@ -248,6 +355,10 @@
         } catch (error) {
           this.log("sendBeacon failed, falling back to fetch:", error);
         }
+      }
+      if (!hasFetch) {
+        this.error("fetch is unavailable; event not delivered");
+        return;
       }
       fetch(endpoint, {
         method: "POST",
@@ -260,6 +371,31 @@
       }).catch((error) => {
         this.error("Failed to send event:", error);
       });
+    }
+    /**
+     * Whether a terminal event may go by sendBeacon: the API exists, no
+     * custom headers are configured (a beacon can't set them), and the
+     * endpoint is same-origin or fetch is unavailable (see send()).
+     * @param {string} endpoint - Destination URL
+     * @param {boolean} hasFetch - Whether fetch is available
+     */
+    canBeacon(endpoint, hasFetch) {
+      const hasCustomHeaders = this.config.headers && Object.keys(this.config.headers).length > 0;
+      if (hasCustomHeaders || typeof navigator === "undefined" || typeof navigator.sendBeacon !== "function") {
+        return false;
+      }
+      return !hasFetch || this.isSameOrigin(endpoint);
+    }
+    /**
+     * Whether an endpoint (absolute or relative) is on the page's origin.
+     * @param {string} endpoint - Destination URL
+     */
+    isSameOrigin(endpoint) {
+      try {
+        return new URL(endpoint, window.location.href).origin === window.location.origin;
+      } catch (error) {
+        return false;
+      }
     }
     /**
      * Generate session ID
@@ -290,12 +426,18 @@
       console.error("[WaveformTracker]", ...args);
     }
     /**
-     * Reset tracker - removes all tracking
+     * Reset tracker - removes all tracking, including the document
+     * listeners, so players created afterwards are ignored until init()
      */
     reset() {
       this.trackers.forEach((tracker2, player) => {
         this.untrackPlayer(player);
       });
+      if (this.listeners) {
+        document.removeEventListener("waveformplayer:ready", this.listeners.ready, true);
+        document.removeEventListener("waveformplayer:destroy", this.listeners.destroy, true);
+        this.listeners = null;
+      }
       this.trackers.clear();
       this.config = null;
       this.sessionId = null;
@@ -324,6 +466,8 @@
     }
   };
   WaveformTracker.SEEK_THRESHOLD = 5;
+  WaveformTracker.SEEK_SLACK = 1;
+  WaveformTracker.COMPLETE_ENGAGEMENT = 0.5;
   var tracker = new WaveformTracker();
   if (typeof window !== "undefined") {
     window.WaveformTracker = tracker;
@@ -334,6 +478,5 @@
  * WaveformTracker
  * Simple analytics tracking for WaveformPlayer
  *
- * @version 1.0.0
  * @license MIT
  */
