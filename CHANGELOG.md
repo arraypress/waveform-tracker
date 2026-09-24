@@ -13,6 +13,10 @@ All notable changes to this project will be documented in this file.
   rate, with 50% headroom plus `SEEK_SLACK`, 1s), and only treated as a seek
   when it clearly exceeds it. The stretch between the last timeupdate and
   `ended` is credited the same way. Small jumps behave as before.
+- **Live streams send `duration: 0` instead of `null`.** A stream's duration
+  is `Infinity`, which JSON serialises as `null`; payloads now always carry a
+  number, with `0` meaning unknown. `complete` is explicitly skipped when the
+  duration isn't finite (it could never fire, but only by accident).
 - **Thresholds crossed in the last second before `ended`, `pause` or destroy
   are no longer lost.** The checks run at most once a second, and `ended`
   only looked at `complete` before resetting, so a `play` or `listen`

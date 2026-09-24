@@ -283,11 +283,12 @@ class WaveformTracker {
             tracker.sentEvents.add('listen');
         }
 
-        // Complete event (percent-based; needs a known duration). Position
+        // Complete event (percent-based; needs a finite, known duration, so
+        // never for live streams whose duration is Infinity). Position
         // alone would let a scrub to the end count, so the listener must also
         // have heard COMPLETE_ENGAGEMENT of the audio up to the threshold:
         // at complete: 90 on a 100s track, 45s of media time.
-        if (events.complete && duration > 0 && percentComplete >= events.complete
+        if (events.complete && Number.isFinite(duration) && duration > 0 && percentComplete >= events.complete
             && totalElapsed >= duration * (events.complete / 100) * WaveformTracker.COMPLETE_ENGAGEMENT
             && !tracker.sentEvents.has('complete')) {
             this.sendEvent(tracker, 'complete', Math.floor(currentTime), duration);
@@ -353,7 +354,9 @@ class WaveformTracker {
             event: eventType,
             url: tracker.player.options.url,
             time: time,
-            duration: Math.floor(duration),
+            // Live streams report Infinity (NaN before metadata), which JSON
+            // serialises as null; send 0 for "unknown" so it stays a number.
+            duration: Number.isFinite(duration) ? Math.floor(duration) : 0,
             page: window.location.pathname,
             ...this.config.metadata
         };

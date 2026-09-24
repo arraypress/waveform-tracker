@@ -403,3 +403,29 @@ describe('complete requires engagement', () => {
 		expect(events.map((e) => [e.event, e.time])).toEqual([['complete', 92]]);
 	});
 });
+
+describe('live streams (non-finite duration)', () => {
+	it('sends duration 0 rather than null', () => {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { listen: 5 }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		hear(p, 6, Infinity);
+		fire(p, 'pause');
+
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({ event: 'listen', duration: 0 });
+		expect(JSON.parse(JSON.stringify(events[0])).duration).toBe(0);
+	});
+
+	it('never fires complete, even when ended reports an infinite position', () => {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { complete: 90 }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		hear(p, 60, Infinity);
+		fire(p, 'ended', { currentTime: Infinity, duration: Infinity });
+
+		expect(events).toEqual([]);
+	});
+});
