@@ -312,3 +312,49 @@ describe('thresholds crossed inside the throttle window', () => {
 		expect(events.map((e) => e.event)).toEqual(['listen']);
 	});
 });
+
+describe('background tabs (timeupdate gaps)', () => {
+	function setup(listen = 30) {
+		const events = [];
+		tracker.init({ handler: (e) => events.push(e), events: { listen }, session: false });
+		const p = fakePlayer();
+		tracker.trackPlayer(p);
+		fire(p, 'play');
+		return { events, p };
+	}
+
+	it('credits a forward jump that matches the wall-clock time elapsed', () => {
+		const { events, p } = setup();
+		timeupdate(p, 10);                     // baseline
+		timeupdate(p, 70, 100, 60_000);        // tab hidden for 60s, played 60s
+
+		expect(tracker.getStats()[0].elapsedTime).toBeCloseTo(60, 5);
+		expect(events.map((e) => e.event)).toEqual(['listen']);
+	});
+
+	it('scales the allowance by the playback rate', () => {
+		const { p } = setup();
+		p.audio = { playbackRate: 2 };
+		timeupdate(p, 10);
+		timeupdate(p, 70, 100, 30_000);        // 30s wall at 2x = 60s media
+
+		expect(tracker.getStats()[0].elapsedTime).toBeCloseTo(60, 5);
+	});
+
+	it('still treats a jump well beyond the elapsed wall time as a seek', () => {
+		const { p } = setup();
+		timeupdate(p, 10);
+		timeupdate(p, 70, 100, 10_000);        // 60s of media in 10s: a seek
+
+		expect(tracker.getStats()[0].elapsedTime).toBe(0);
+	});
+
+	it('credits the stalled tail when the track ends in the background', () => {
+		const { events, p } = setup();
+		timeupdate(p, 60);                     // last update before hiding
+		now += 40_000;                         // hidden until the track ends
+		fire(p, 'ended', { currentTime: 100, duration: 100 });
+
+		expect(events.map((e) => [e.event, e.time])).toEqual([['listen', 40]]);
+	});
+});

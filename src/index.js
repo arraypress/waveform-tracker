@@ -97,6 +97,9 @@ class WaveformTracker {
             // for the content actually consumed. lastTime is the previous
             // currentTime seen while tracking; null resets the delta baseline.
             lastTime: null,
+            // Date.now() when lastTime was recorded, so a forward jump can be
+            // compared against the real time that passed (see accumulate()).
+            lastWall: null,
             elapsedTime: 0,
             // Last known position/duration, for the unthrottled checks run on
             // pause and untrack (whose events carry no time).
@@ -141,15 +144,8 @@ class WaveformTracker {
 
                 // Accumulate engagement from media-time deltas (every event,
                 // not throttled) so 1.5x/2x playback isn't under-credited.
-                // Ignore non-advances (pauses/repeats) and large jumps (seeks).
                 if (typeof currentTime === 'number') {
-                    if (tracker.lastTime !== null) {
-                        const delta = currentTime - tracker.lastTime;
-                        if (delta > 0 && delta < WaveformTracker.SEEK_THRESHOLD) {
-                            tracker.elapsedTime += delta;
-                        }
-                    }
-                    tracker.lastTime = currentTime;
+                    this.accumulate(tracker, currentTime);
                     tracker.lastPosition = currentTime;
                     tracker.lastDuration = duration;
                 }
@@ -174,6 +170,12 @@ class WaveformTracker {
                 const currentTime = typeof detail.currentTime === 'number'
                     ? detail.currentTime
                     : duration;
+
+                // Credit the stretch since the last timeupdate: in a hidden
+                // tab updates can stall long before the track ends.
+                if (tracker.isTracking) {
+                    this.accumulate(tracker, currentTime);
+                }
 
                 tracker.isTracking = false;
                 tracker.lastTime = null;
@@ -219,6 +221,43 @@ class WaveformTracker {
         tracker.lastPosition = null;
         tracker.lastDuration = null;
         tracker.lastCheck = null;
+    }
+
+    /**
+     * Credit the media time played since the previous position.
+     *
+     * Non-advances (pauses/repeats) are ignored. Small forward deltas are
+     * normal playback. A larger jump is only playback if it fits the wall-clock
+     * time that passed: background tabs throttle the player's timeupdates, so
+     * minutes of real listening can arrive as one jump. Anything clearly
+     * beyond elapsed real time is a seek and isn't credited.
+     * @param {Object} tracker - Tracker state for a player
+     * @param {number} currentTime - Playhead position (seconds)
+     */
+    accumulate(tracker, currentTime) {
+        const now = Date.now();
+        if (tracker.lastTime !== null) {
+            const delta = currentTime - tracker.lastTime;
+            if (delta > 0 && (delta < WaveformTracker.SEEK_THRESHOLD
+                || delta <= this.playableSince(tracker, now))) {
+                tracker.elapsedTime += delta;
+            }
+        }
+        tracker.lastTime = currentTime;
+        tracker.lastWall = now;
+    }
+
+    /**
+     * Most media time (seconds) that could have played since lastWall: the
+     * wall time at the current rate, with 50% headroom for timer jitter plus
+     * SEEK_SLACK. External mode has no audio element, so assumes 1x.
+     * @param {Object} tracker - Tracker state for a player
+     * @param {number} now - Current Date.now()
+     */
+    playableSince(tracker, now) {
+        const wall = (now - tracker.lastWall) / 1000;
+        const rate = tracker.player.audio?.playbackRate ?? 1;
+        return wall * rate * 1.5 + WaveformTracker.SEEK_SLACK;
     }
 
     /**
@@ -460,10 +499,13 @@ class WaveformTracker {
     }
 }
 
-// Maximum forward currentTime jump (seconds) still treated as normal playback
-// when accumulating media-time engagement. Larger jumps are treated as seeks
-// and not credited.
+// Forward currentTime jumps (seconds) below this are always credited as normal
+// playback. Larger jumps are credited only when they fit the wall-clock time
+// that passed (a throttled background tab); otherwise they are seeks.
 WaveformTracker.SEEK_THRESHOLD = 5;
+
+// Seconds of headroom added to the wall-clock allowance for large jumps.
+WaveformTracker.SEEK_SLACK = 1;
 
 // Create singleton instance
 const tracker = new WaveformTracker();

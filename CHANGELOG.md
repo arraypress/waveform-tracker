@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Listening in a background tab is counted.** Browsers throttle hidden tabs,
+  so the player's timeupdates can stall and then report minutes of playback as
+  one jump — which the tracker discarded as a seek. A forward jump over 5s is
+  now credited when it fits the real time that passed (at the current playback
+  rate, with 50% headroom plus `SEEK_SLACK`, 1s), and only treated as a seek
+  when it clearly exceeds it. The stretch between the last timeupdate and
+  `ended` is credited the same way. Small jumps behave as before.
 - **Thresholds crossed in the last second before `ended`, `pause` or destroy
   are no longer lost.** The checks run at most once a second, and `ended`
   only looked at `complete` before resetting, so a `play` or `listen`
