@@ -62,6 +62,10 @@
       }
       const tracker2 = {
         player,
+        // The URL this state belongs to. load()/loadTrack() swap tracks on
+        // the same player without firing `ended`, so syncTrack() compares
+        // against it and resets the per-track state on a change.
+        url: player.options.url,
         // Engagement is accumulated from media-time (currentTime) deltas
         // rather than wall-clock, so faster playback (1.5x/2x) is credited
         // for the content actually consumed. lastTime is the previous
@@ -77,6 +81,7 @@
       const container = player.container;
       tracker2.handlers = {
         play: () => {
+          this.syncTrack(tracker2);
           tracker2.isTracking = true;
           tracker2.lastTime = null;
           this.log("Play started:", player.options.url);
@@ -90,6 +95,7 @@
         },
         timeupdate: (e) => {
           if (!tracker2.isTracking) return;
+          this.syncTrack(tracker2);
           const { currentTime, duration } = e.detail;
           if (typeof currentTime === "number") {
             if (tracker2.lastTime !== null) {
@@ -141,6 +147,24 @@
       container.addEventListener("waveformplayer:pause", tracker2.handlers.pause);
       container.addEventListener("waveformplayer:timeupdate", tracker2.handlers.timeupdate);
       container.addEventListener("waveformplayer:ended", tracker2.handlers.ended);
+    }
+    /**
+     * Reset per-track state when the player has moved on to a different URL.
+     *
+     * Engagement and sent events are per track, but a player instance can
+     * outlive many tracks. Without this, a track swapped in mid-play inherited
+     * the previous track's elapsed time and never re-sent play/listen/complete.
+     * @param {Object} tracker - Tracker state for a player
+     */
+    syncTrack(tracker2) {
+      const url = tracker2.player.options?.url;
+      if (url === tracker2.url) return;
+      this.log("Track changed:", tracker2.url, "->", url);
+      tracker2.url = url;
+      tracker2.sentEvents.clear();
+      tracker2.elapsedTime = 0;
+      tracker2.lastTime = null;
+      tracker2.lastCheck = null;
     }
     /**
      * Stop tracking a specific player
