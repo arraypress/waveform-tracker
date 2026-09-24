@@ -2,7 +2,6 @@
  * WaveformTracker
  * Simple analytics tracking for WaveformPlayer
  *
- * @version 1.0.0
  * @license MIT
  */
 
